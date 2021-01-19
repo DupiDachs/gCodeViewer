@@ -42,7 +42,7 @@ GCODE.gCodeReader = (function(){
         gcode = [];
         var i;
         for(i=0;i<lines.length;i++){
-            if(lines[i].match(/^(G0|G1|G90|G91|G92|M82|M83|G28)/i))gcode.push(lines[i]);
+            if(lines[i].match(/^(G0|G1|G2|G3|G90|G91|G92|M82|M83|G28|G10|G11)/i))gcode.push(lines[i]);
         }
         lines = [];
 //        console.log("GCode prepared");

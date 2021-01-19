@@ -284,7 +284,7 @@
         var sendMultiLayerZ = [];
         var lastSend = 0;
     //            console.time("parseGCode timer");
-        var reg = new RegExp(/^(?:G0|G1)\s/i);
+        var reg = new RegExp(/^(?:G0|G1|G2|G3|G10|G11)\s/i);
         var comment = new RegExp()
         var j, layer= 0, extrude=false, prevRetract= {e: 0, a: 0, b: 0, c: 0}, retract=0, x, y, z=0, f, prevZ=0, prevX, prevY,lastF=4000, prev_extrude = {a: undefined, b: undefined, c: undefined, e: undefined, abs: undefined}, extrudeRelative=false, volPerMM, extruder;
         var dcExtrude=false;
@@ -295,11 +295,14 @@
             x=undefined;
             y=undefined;
             z=undefined;
+            ii=undefined;
+            jj=undefined;
             volPerMM=undefined;
             retract = 0;
 
 
             extrude=false;
+            breakLoop=false;
             extruder = null;
             prev_extrude["abs"] = 0;
             gcode[i] = gcode[i].split(/[\(;]/)[0];
@@ -309,10 +312,47 @@
     //                if(gcode[i].match(/^(?:G0|G1)\s+/i)){
             if(reg.test(gcode[i])){
                 var args = gcode[i].split(/\s/);
+                breakLoop=false;
                 for(j=0;j<args.length;j++){
-    //                        console.log(args);
-    //                        if(!args[j])continue;
+                           // console.log(args);
+                           // if(!args[j])continue;
                     switch(argChar = args[j].charAt(0).toLowerCase()){
+                        case 'g':
+                            if(gcode[i].match(/^(?:G10|G11)/i)){
+                                x = prevX;
+                                y = prevY;
+                                //console.log(gcode[i]);
+                                assumeNonDC = true;
+                                extruder = argChar;
+                                if(gcode[i].match(/^(?:G10)/i)){
+                                    numSlice = parseFloat('3').toFixed(6);
+                                }else{
+                                    numSlice = parseFloat('-3').toFixed(6);
+                                }
+                                
+                                if(!extrudeRelative){
+                                    prev_extrude["abs"] = parseFloat(numSlice)-parseFloat(prev_extrude[argChar]);
+
+                                }else{
+                                    prev_extrude["abs"] = parseFloat(numSlice);
+                                }
+                                extrude = prev_extrude["abs"]>0;
+                                if(prev_extrude["abs"]<0){
+                                    prevRetract[extruder] = -1;
+                                    retract = -1;
+                                }
+                                else if(prev_extrude["abs"]==0){
+                                    retract = 0;
+                                }else if(prev_extrude["abs"]>0&&prevRetract[extruder] < 0){
+                                    prevRetract[extruder] = 0;
+                                    retract = 1;
+                                } else {
+                                    retract = 0;
+                                }
+                                prev_extrude[argChar] = numSlice;
+                                breakLoop = true;
+                            }
+                            break;
                         case 'x':
                             x=args[j].slice(1);
 //                            if(x === prevX){
@@ -324,6 +364,12 @@
 //                            if(y===prevY){
 //                                y=undefined;
 //                            }
+                            break;
+                        case 'i':
+                            ii=args[j].slice(1);
+                            break;
+                        case 'j':
+                            jj=args[j].slice(1);
                             break;
                         case 'z':
                             z=args[j].slice(1);
@@ -383,6 +429,9 @@
                         default:
                             break;
                     }
+                    if (breakLoop) {
+                        break;
+                    }
                 }
                 if(dcExtrude&&!assumeNonDC){
                     extrude = true;
@@ -390,6 +439,64 @@
                 }
                 if(extrude&&retract == 0){
                     volPerMM = Number(prev_extrude['abs']/Math.sqrt((prevX-x)*(prevX-x)+(prevY-y)*(prevY-y)));
+                }
+                if(gcode[i].match(/^(?:G2|G3)/i)){
+                    etot = prev_extrude["abs"];
+                    iii = parseFloat(ii);
+                    jjj = parseFloat(jj);
+                    radius = Math.sqrt(iii*iii+jjj*jjj);
+                    x0 = parseFloat(prevX)+iii;
+                    y0 = parseFloat(prevY)+jjj;
+                    t1=180*Math.acos(Math.max(Math.min((prevX-x0)/radius,1),-1))/Math.PI;
+                    t2=180*Math.acos(Math.max(Math.min((x-x0)/radius,1),-1))/Math.PI;
+                    if(prevY<y0){t1=360-t1;}
+                    if(y<y0){t2=360-t2;}
+                    if(gcode[i].match(/^(?:G3)/i)){
+                        if(t1>t2){t2=t2+360;}
+                        tlen = Math.floor(t2-t1);
+                    }else{
+                        if(t2>t1){t1=t1+360;}
+                        tlen = Math.floor(t1-t2);
+                    }
+                    ltot = tlen/180*radius*Math.PI;
+                    lt = tlen/ltot;
+                    if(!model[layer])model[layer]=[];
+                    // console.log("START")
+                    // console.log(t1);
+                    if(gcode[i].match(/^(?:G3)/i)){
+                        for(l=1;l<ltot;l++){
+                            xs = x0+radius*Math.cos((l*lt+t1)/180*Math.PI);
+                            ys = y0+radius*Math.sin((l*lt+t1)/180*Math.PI);
+                            lcur = Math.sqrt((prevX-xs)*(prevX-xs)+(prevY-ys)*(prevY-ys));
+                            prev_extrude['abs'] = etot/ltot*lcur;
+                            if(extrude&&retract == 0){
+                                volPerMM = Number(prev_extrude['abs']/lcur);
+                            }
+                            model[layer][model[layer].length] = {x: Number(xs), y: Number(ys), z: Number(z), extrude: extrude, retract: Number(retract), noMove: false, extrusion: (extrude||retract)?Number(prev_extrude["abs"]):0, extruder: extruder, prevX: Number(prevX), prevY: Number(prevY), prevZ: Number(prevZ), speed: Number(lastF), gcodeLine: Number(i), volPerMM: typeof(volPerMM)==='undefined'?-1:volPerMM};
+                            prevX = xs;
+                            prevY = ys;
+                        }
+                    }else{
+                        for(l=1;l<ltot;l++){
+                            xs = x0+radius*Math.cos((t1-l*lt)/180*Math.PI);
+                            ys = y0+radius*Math.sin((t1-l*lt)/180*Math.PI);
+                            lcur = Math.sqrt((prevX-xs)*(prevX-xs)+(prevY-ys)*(prevY-ys));
+                            prev_extrude['abs'] = etot/ltot*lcur;
+                            if(extrude&&retract == 0){
+                                volPerMM = Number(prev_extrude['abs']/lcur);
+                            }
+                            model[layer][model[layer].length] = {x: Number(xs), y: Number(ys), z: Number(z), extrude: extrude, retract: Number(retract), noMove: false, extrusion: (extrude||retract)?Number(prev_extrude["abs"]):0, extruder: extruder, prevX: Number(prevX), prevY: Number(prevY), prevZ: Number(prevZ), speed: Number(lastF), gcodeLine: Number(i), volPerMM: typeof(volPerMM)==='undefined'?-1:volPerMM};
+                            prevX = xs;
+                            prevY = ys;
+                        }
+                    }
+                    // console.log(y);
+                    // console.log("END");
+                    lcur = Math.sqrt((prevX-x)*(prevX-x)+(prevY-y)*(prevY-y));
+                    prev_extrude['abs'] = etot/ltot*lcur;
+                    if(extrude&&retract == 0){
+                        volPerMM = Number(prev_extrude['abs']/lcur);
+                    }
                 }
                 if(!model[layer])model[layer]=[];
                 //if(typeof(x) !== 'undefined' || typeof(y) !== 'undefined' ||typeof(z) !== 'undefined'||retract!=0)
